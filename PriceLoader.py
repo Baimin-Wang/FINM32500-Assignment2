@@ -21,7 +21,6 @@ class PriceLoader:
         self.end_date = end_date
         self.batch_size = batch_size
         self.tickers = self._get_sp500_tickers_from_slickcharts()
-        # 统一成 Yahoo 可用的代码
         self.yf_tickers = [_to_yahoo_symbol(t) for t in self.tickers]
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -52,20 +51,18 @@ class PriceLoader:
         ]
 
     def _download_single_ticker(self, yf_ticker):
-        """单票下载：统一 auto_adjust=False + 取 Adj Close。"""
         try:
             data = yf.download(
                 yf_ticker,
                 start=self.start_date,
                 end=self.end_date,
-                auto_adjust=False,   # 关键：这样一定有 'Adj Close'
+                auto_adjust=False,
                 progress=False,
             )
             if not data.empty:
                 if 'Adj Close' in data.columns:
                     return data['Adj Close'].dropna()
                 elif 'Close' in data.columns:
-                    # 兜底（极少数情况）
                     return data['Close'].dropna()
             logging.warning(f"No adjusted close data for {yf_ticker}.")
         except Exception as e:
@@ -73,22 +70,18 @@ class PriceLoader:
         return pd.Series(dtype='float64')
 
     def _download_batch(self, yf_batch):
-        """批量下载 + 单票补漏（健壮提取 Adj Close，无论列层级顺序如何）."""
         def _extract_adj_close_matrix(raw: pd.DataFrame) -> pd.DataFrame:
             if raw is None or raw.empty:
                 return pd.DataFrame()
-            # 多重列：尝试在任意层级切 'Adj Close'
             if isinstance(raw.columns, pd.MultiIndex):
                 for lvl in range(raw.columns.nlevels):
                     try:
                         mat = raw.xs('Adj Close', axis=1, level=lvl, drop_level=True)
-                        # 保证是 DataFrame
                         if isinstance(mat, pd.Series):
                             mat = mat.to_frame()
                         return mat
                     except KeyError:
                         continue
-                # 兜底再试 'Close'
                 for lvl in range(raw.columns.nlevels):
                     try:
                         mat = raw.xs('Close', axis=1, level=lvl, drop_level=True)
@@ -98,12 +91,10 @@ class PriceLoader:
                     except KeyError:
                         continue
                 return pd.DataFrame()
-            # 单层列：单票情况
             else:
                 if 'Adj Close' in raw.columns:
-                    # 单票时列名不是 ticker，所以重命名成该票名，便于统一拼接
                     return raw[['Adj Close']].rename(columns={'Adj Close': yf_batch[0]})
-                if 'Close' in raw.columns:  # 兜底
+                if 'Close' in raw.columns:
                     return raw[['Close']].rename(columns={'Close': yf_batch[0]})
                 return pd.DataFrame()
 
@@ -113,7 +104,7 @@ class PriceLoader:
                 yf_batch,
                 start=self.start_date,
                 end=self.end_date,
-                auto_adjust=False,   # 保证应该有 Adj Close
+                auto_adjust=False,
                 progress=False,
                 group_by='ticker',
                 threads=True,
@@ -122,7 +113,6 @@ class PriceLoader:
         except Exception as e:
             logging.warning(f"Batch download failed (transport): {str(e)}. Will fallback to single-ticker.")
 
-        # 用单票补缺（包括 batch_data 为空或缺列）
         missing = [t for t in yf_batch if (batch_data.empty or t not in batch_data.columns)]
         if missing:
             logging.info(f"Fetching missing tickers individually ({len(missing)}): "
@@ -150,7 +140,7 @@ class PriceLoader:
                     existing = [t for t in original_batch if os.path.exists(os.path.join(self.data_dir, f"{t}.parquet"))]
                     need_fetch = [t for t in original_batch if t not in existing]
                     skipped_existing += len(existing)
-                    pbar.update(len(existing))  # 正确更新进度
+                    pbar.update(len(existing))
 
                 if not need_fetch:
                     time.sleep(0.2)
@@ -170,7 +160,7 @@ class PriceLoader:
                         continue
 
                     s = batch_df[t].dropna()
-                    if len(s) < 252:  # 少于一年交易日，跳过
+                    if len(s) < 252:
                         skipped_short += 1
                         pbar.update(1)
                         continue
@@ -189,7 +179,6 @@ class PriceLoader:
         logging.info(f"  - Skipped <1y: {skipped_short}")
 
     def load_price(self, ticker):
-        """加载时也允许传 BRK.B / BRK-B，统一转成 Yahoo 格式寻找文件。"""
         t = _to_yahoo_symbol(ticker)
         fp = os.path.join(self.data_dir, f"{t}.parquet")
         if os.path.exists(fp):
